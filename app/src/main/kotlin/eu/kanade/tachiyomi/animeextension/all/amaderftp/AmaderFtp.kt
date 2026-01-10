@@ -260,8 +260,8 @@ class AmaderFtp : Source(), UnmeteredSource {
         SortFilter()
     )
 
-    private class CategoryFilter : AnimeFilter.Select<String>("Category", arrayOf("All")) {
-        private val ids = arrayOf("")
+    private class CategoryFilter : AnimeFilter.Select<String>("Category", arrayOf("All", "3D MOVIES", "ANIMATION", "BANGLA", "DUBBED", "ENGLISH", "HINDI", "Playlists", "TAMIL", "TV SERIES")) {
+        private val ids = arrayOf("", "162206c46a6e4cafcbeb6afe0bcabd05", "3c31655512f355224c80fb9d26b96a86", "9b9a8e2554388a4174be75fa66e0fd61", "5705248032de005e70b2bc776246006f", "4f9a1aee122b0b1d02c34ba39f31e331", "4146eee110de8dd20f0a48dd88ca9f44", "dc84f6d3b6261d36edece26308f64ac1", "5a4fc1fc9e647e37b145a379afc74171", "ea34d9f8d8b815c9ee04e1b30418f93d")
         fun toValue() = ids[state]
     }
     private class SortFilter : AnimeFilter.Sort("Sort by", arrayOf("Name", "Date Added", "Premiere Date"), Selection(0, false)) {
