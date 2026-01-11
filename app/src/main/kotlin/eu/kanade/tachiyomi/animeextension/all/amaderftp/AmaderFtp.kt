@@ -3,44 +3,40 @@ package eu.kanade.tachiyomi.animeextension.all.amaderftp
 import android.app.Application
 import android.content.SharedPreferences
 import android.os.Build
-import android.provider.Settings
-import android.util.Log
+import androidx.preference.EditTextPreference
 import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.animesource.UnmeteredSource
+import eu.kanade.tachiyomi.animesource.ConfigurableAnimeSource
 import eu.kanade.tachiyomi.animesource.model.AnimeFilter
 import eu.kanade.tachiyomi.animesource.model.AnimeFilterList
 import eu.kanade.tachiyomi.animesource.model.AnimesPage
 import eu.kanade.tachiyomi.animesource.model.SAnime
 import eu.kanade.tachiyomi.animesource.model.SEpisode
-import eu.kanade.tachiyomi.animesource.model.Track
 import eu.kanade.tachiyomi.animesource.model.Video
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
-import eu.kanade.tachiyomi.util.parallelFlatMap
 import extensions.utils.Source
-import extensions.utils.addListPreference
 import extensions.utils.delegate
-import extensions.utils.get
 import extensions.utils.parseAs
-import extensions.utils.toJsonBody
 import extensions.utils.toRequestBody
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.descriptors.PrimitiveKind
 import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.descriptors.SerialDescriptor
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNamingStrategy
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.add
 import okhttp3.Dns
 import okhttp3.Headers
 import okhttp3.HttpUrl
@@ -50,9 +46,8 @@ import org.apache.commons.text.StringSubstitutor
 import org.jsoup.Jsoup
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
+import java.io.IOException
 import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
-import java.text.ParseException
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.UUID
@@ -61,7 +56,7 @@ import java.util.UUID
 enum class ItemType {
     BoxSet, Movie, Season, Series, Episode, Other;
     companion object {
-        fun fromString(value: String): ItemType = entries.find { it.name.equals(value, ignoreCase = true) } ?: Other
+        fun fromString(value: String): ItemType = values().find { it.name.equals(value, ignoreCase = true) } ?: Other
     }
 }
 
@@ -88,7 +83,8 @@ object ItemTypeSerializer : KSerializer<ItemType> {
         url = baseUrl.toHttpUrl().newBuilder().addPathSegment("Users").addPathSegment(userId).addPathSegment("Items").addPathSegment(id).fragment(typeMap[type]).build().toString()
         thumbnail_url = imageTags.primary?.getImageUrl(baseUrl, id)
         title = name
-        description = overview?.let { Jsoup.parseBodyFragment(it.replace("<br>", "br2n")).text().replace("br2n", "\n") }
+        // Optimized: Regex instead of Jsoup for list performance
+        description = overview?.replace("<br>", "\n")?.replace(Regex("<[^>]*>"), "")
         genre = genres?.joinToString(", ")
         author = studios?.joinToString(", ") { it.name }
         status = if (type == ItemType.Movie) SAnime.COMPLETED else this@ItemDto.status.parseStatus()
@@ -119,25 +115,13 @@ object ItemTypeSerializer : KSerializer<ItemType> {
     companion object { private val FORMATTER_DATE_TIME = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.ENGLISH) }
 }
 @Serializable data class LoginDto(val accessToken: String, val sessionInfo: LoginSessionDto) { @Serializable data class LoginSessionDto(val userId: String) }
-@Serializable data class PlaybackInfoDto(val userId: String, val isPlayback: Boolean, val mediaSourceId: String, val maxStreamingBitrate: Long, val enableTranscoding: Boolean, val audioStreamIndex: String? = null, val subtitleStreamIndex: String? = null, val alwaysBurnInSubtitleWhenTranscoding: Boolean, val deviceProfile: DeviceProfileDto)
-@Serializable data class DeviceProfileDto(val name: String, val maxStreamingBitrate: Long, val maxStaticBitrate: Long, val musicStreamingTranscodingBitrate: Long, val transcodingProfiles: List<ProfileDto>, val directPlayProfiles: List<ProfileDto>, val responseProfiles: List<ProfileDto>, val containerProfiles: List<ProfileDto>, val codecProfiles: List<ProfileDto>, val subtitleProfiles: List<SubtitleProfileDto>) { 
-    @Serializable data class ProfileDto(val type: String, val container: String? = null, val protocol: String? = null, val audioCodec: String? = null, val videoCodec: String? = null, val codec: String? = null, val maxAudioChannels: String? = null, val conditions: List<ProfileConditionDto>? = null) { 
-        @Serializable data class ProfileConditionDto(val condition: String, val property: String, val value: String)
-    }
-    @Serializable data class SubtitleProfileDto(val format: String, val method: String)
-}
-@Serializable data class SessionDto(val mediaSources: List<MediaDto>, val playSessionId: String)
-@Serializable data class MediaDto(val size: Long? = null, val id: String? = null, val bitrate: Long? = null, val transcodingUrl: String? = null, val supportsTranscoding: Boolean, val supportsDirectStream: Boolean, val mediaStreams: List<MediaStreamDto>) { 
-    @Serializable data class MediaStreamDto(val codec: String, val index: Int, val type: String, val supportsExternalStream: Boolean, val isExternal: Boolean, val language: String? = null, val displayTitle: String? = null, val bitRate: Long? = null)
-}
+@Serializable data class MediaDto(val size: Long? = null, val id: String? = null)
 
 fun Long.formatBytes(): String = when {
     this >= 1_000_000_000L -> "%.2f GB".format(this / 1_000_000_000.0)
     this >= 1_000_000L -> "%.2f MB".format(this / 1_000_000.0)
     this >= 1_000L -> "%.2f KB".format(this / 1_000.0)
-    this > 1L -> "$this bytes"
-    this == 1L -> "$this byte"
-    else -> ""
+    else -> "$this B"
 }
 fun String.getImageUrl(baseUrl: String, id: String): String = baseUrl.toHttpUrl().newBuilder().addPathSegment("Items").addPathSegment(id).addPathSegment("Images").addPathSegment("Primary").addQueryParameter("tag", this).build().toString()
 object PascalCaseToCamelCase : JsonNamingStrategy { override fun serialNameForJson(descriptor: SerialDescriptor, elementIndex: Int, serialName: String): String = serialName.replaceFirstChar { it.uppercase() } }
@@ -146,45 +130,71 @@ fun getAuthHeader(deviceInfo: AmaderFtp.DeviceInfo, token: String? = null): Stri
     return params.filterNot { it.second == null }.joinToString(separator = ", ", prefix = "MediaBrowser ", transform = { "${it.first}=\"" + URLEncoder.encode(it.second!!.trim().replace("\n", " "), "UTF-8") + "\"" })
 }
 
-class AmaderFtp : Source(), UnmeteredSource {
-    override val baseUrl = "http://amaderftp.net:8096"
+class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
     override val name = "Amader FTP"
     override val lang = "all"
     override val supportsLatest = true
     override val id: Long = 84769302158234567L
 
+    private val prefs: SharedPreferences by lazy {
+        Injekt.get<Application>().getSharedPreferences("source_$id", 0)
+    }
+
+    override val baseUrl: String
+        get() = prefs.getString(PREF_BASE_URL, "http://amaderftp.net:8096")!!
+
     override val json = Json { isLenient = true; ignoreUnknownKeys = true; namingStrategy = PascalCaseToCamelCase }
     private val deviceInfo by lazy { getDeviceInfo(Injekt.get<Application>()) }
 
-    private var accessToken: String by preferences.delegate("access_token", "")
-    private var userId: String by preferences.delegate("user_id", "")
+    private var accessToken: String by prefs.delegate("access_token", "")
+    private var userId: String by prefs.delegate("user_id", "")
 
     override val client = network.client.newBuilder()
         .dns(Dns.SYSTEM)
         .addInterceptor { chain ->
             val request = chain.request()
             if (request.url.encodedPath.contains("AuthenticateByName")) return@addInterceptor chain.proceed(request)
-            if (accessToken.isBlank()) runBlockingLogin()
-            val authRequest = request.newBuilder().addHeader("Authorization", getAuthHeader(deviceInfo, accessToken)).build()
-            chain.proceed(authRequest)
+            
+            if (accessToken.isBlank()) {
+                synchronized(this) {
+                    if (accessToken.isBlank()) login()
+                }
+            }
+            
+            val authRequest = request.newBuilder()
+                .addHeader("Authorization", getAuthHeader(deviceInfo, accessToken))
+                .build()
+            
+            val response = chain.proceed(authRequest)
+            if (response.code == 401) {
+                synchronized(this) {
+                    response.close()
+                    login()
+                    val newAuthRequest = request.newBuilder()
+                        .addHeader("Authorization", getAuthHeader(deviceInfo, accessToken))
+                        .build()
+                    return@addInterceptor chain.proceed(newAuthRequest)
+                }
+            }
+            response
         }.build()
 
-    private fun runBlockingLogin() {
+    private fun login() {
         val authHeaders = Headers.headersOf("Authorization", getAuthHeader(deviceInfo))
         val body = buildJsonObject { put("Username", "user"); put("Pw", "1234") }.toRequestBody(json)
-        try {
-            val resp = network.client.newCall(POST("$baseUrl/Users/AuthenticateByName", authHeaders, body)).execute()
-            if (resp.isSuccessful) {
-                val loginDto = resp.parseAs<LoginDto>(json)
-                accessToken = loginDto.accessToken
-                userId = loginDto.sessionInfo.userId
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
+        val resp = network.client.newCall(POST("$baseUrl/Users/AuthenticateByName", authHeaders, body)).execute()
+        if (resp.isSuccessful) {
+            val loginDto = resp.parseAs<LoginDto>(json)
+            accessToken = loginDto.accessToken
+            userId = loginDto.sessionInfo.userId
+        } else {
+            resp.close()
+            throw IOException("Login failed: ${resp.code}")
         }
     }
 
     override suspend fun getPopularAnime(page: Int): AnimesPage = getSearchAnime(page, "", AnimeFilterList())
+    
     override suspend fun getLatestUpdates(page: Int): AnimesPage {
         val startIndex = (page - 1) * 20
         val url = getItemsUrl(startIndex).newBuilder().apply { addQueryParameter("SortBy", "DateCreated,SortName"); addQueryParameter("SortOrder", "Descending") }.build()
@@ -248,22 +258,90 @@ class AmaderFtp : Source(), UnmeteredSource {
 
     data class DeviceInfo(val clientName: String, val version: String, val id: String, val name: String)
     private fun getDeviceInfo(context: Application): DeviceInfo {
-        val deviceId = preferences.getString("device_id", null) ?: UUID.randomUUID().toString().replace("-", "").take(16).also { preferences.edit().putString("device_id", it).apply() }
+        val deviceId = prefs.getString("device_id", null) ?: UUID.randomUUID().toString().replace("-", "").take(16).also { prefs.edit().putString("device_id", it).apply() }
         return DeviceInfo("Aniyomi", "1.0.0", deviceId, Build.MODEL)
     }
 
-    override fun setupPreferenceScreen(screen: PreferenceScreen) {}
-
-    // Filters
-    override fun getFilterList() = AnimeFilterList(
-        CategoryFilter(),
-        SortFilter()
-    )
-
-    private class CategoryFilter : AnimeFilter.Select<String>("Category", arrayOf("All", "3D MOVIES", "ANIMATION", "BANGLA", "DUBBED", "ENGLISH", "HINDI", "Playlists", "TAMIL", "TV SERIES")) {
-        private val ids = arrayOf("", "162206c46a6e4cafcbeb6afe0bcabd05", "3c31655512f355224c80fb9d26b96a86", "9b9a8e2554388a4174be75fa66e0fd61", "5705248032de005e70b2bc776246006f", "4f9a1aee122b0b1d02c34ba39f31e331", "4146eee110de8dd20f0a48dd88ca9f44", "dc84f6d3b6261d36edece26308f64ac1", "5a4fc1fc9e647e37b145a379afc74171", "ea34d9f8d8b815c9ee04e1b30418f93d")
-        fun toValue() = ids[state]
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        EditTextPreference(screen.context).apply {
+            key = PREF_BASE_URL
+            title = "Base URL"
+            summary = "Amader FTP Server URL (default: http://amaderftp.net:8096)"
+            setDefaultValue("http://amaderftp.net:8096")
+            setOnPreferenceChangeListener { _, newValue ->
+                try {
+                    val newUrl = (newValue as String).trim()
+                    newUrl.toHttpUrl() // Validate URL
+                    true
+                } catch (e: Exception) {
+                    false
+                }
+            }
+        }.also(screen::addPreference)
     }
+
+    // Dynamic Filters
+    private var categoriesCache: List<Pair<String, String>>? = null
+    
+    private fun fetchCategories(): List<Pair<String, String>> {
+        if (categoriesCache == null) {
+            val cachedJson = prefs.getString("pref_cached_categories", null)
+            if (cachedJson != null) {
+                try {
+                    val list = mutableListOf<Pair<String, String>>()
+                    // Use json instance to parse
+                    val array = json.parseToJsonElement(cachedJson).jsonArray
+                    array.forEach { 
+                        val obj = it.jsonObject
+                        val name = obj["name"]!!.jsonPrimitive.content
+                        val id = obj["id"]!!.jsonPrimitive.content
+                        list.add(Pair(name, id))
+                    }
+                    categoriesCache = list
+                } catch (e: Exception) { e.printStackTrace() }
+            }
+        }
+
+        categoriesCache?.let { if (it.isNotEmpty()) return it }
+        
+        val list = mutableListOf<Pair<String, String>>(Pair("All", ""))
+        try {
+            if (userId.isNotBlank()) {
+                val url = "$baseUrl/Users/$userId/Views"
+                val resp = client.newCall(GET(url)).execute()
+                if (resp.isSuccessful) {
+                    val views = resp.parseAs<ItemListDto>(json)
+                    views.items.forEach { list.add(Pair(it.name, it.id)) }
+                    
+                    // Persist cache
+                    val jsonArray = buildJsonArray {
+                        list.forEach { pair ->
+                            add(buildJsonObject {
+                                put("name", pair.first)
+                                put("id", pair.second)
+                            })
+                        }
+                    }
+                    prefs.edit().putString("pref_cached_categories", jsonArray.toString()).apply()
+                }
+            }
+        } catch (e: Exception) { e.printStackTrace() }
+        categoriesCache = list
+        return list
+    }
+
+    override fun getFilterList(): AnimeFilterList {
+        val categories = fetchCategories()
+        return AnimeFilterList(
+            CategoryFilter(categories),
+            SortFilter()
+        )
+    }
+
+    private class CategoryFilter(val categories: List<Pair<String, String>>) : AnimeFilter.Select<String>("Category", categories.map { it.first }.toTypedArray()) {
+        fun toValue() = categories[state].second
+    }
+
     private class SortFilter : AnimeFilter.Sort("Sort by", arrayOf("Name", "Date Added", "Premiere Date"), Selection(0, false)) {
         private val sortables = arrayOf("SortName", "DateCreated", "ProductionYear")
         fun toSortValue() = sortables[state!!.index]
@@ -271,5 +349,8 @@ class AmaderFtp : Source(), UnmeteredSource {
     }
 
     private suspend fun okhttp3.Call.await(): Response = withContext(Dispatchers.IO) { execute() }
+    
+    companion object {
+        private const val PREF_BASE_URL = "pref_base_url"
+    }
 }
-
