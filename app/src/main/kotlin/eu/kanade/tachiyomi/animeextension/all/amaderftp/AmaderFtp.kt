@@ -74,7 +74,8 @@ object ItemTypeSerializer : KSerializer<ItemType> {
     val overview: String? = null, val genres: List<String>? = null, val studios: List<StudioDto>? = null,
     val originalTitle: String? = null, val sortName: String? = null, val indexNumber: Int? = null,
     val premiereDate: String? = null, val runTimeTicks: Long? = null, val dateCreated: String? = null,
-    val mediaSources: List<MediaDto>? = null
+    val mediaSources: List<MediaDto>? = null,
+    val officialRating: String? = null, val communityRating: Float? = null, val criticRating: Float? = null
 ) {
     @Serializable data class ImageDto(val primary: String? = null)
     @Serializable class StudioDto(val name: String)
@@ -84,7 +85,12 @@ object ItemTypeSerializer : KSerializer<ItemType> {
         thumbnail_url = imageTags.primary?.getImageUrl(baseUrl, id)
         title = name
         // Optimized: Regex instead of Jsoup for list performance
-        description = overview?.replace("<br>", "\n")?.replace(Regex("<[^>]*>"), "")
+        description = buildString {
+            overview?.let { append(it.replace("<br>", "\n").replace(Regex("<[^>]*>"), "")); append("\n\n") }
+            officialRating?.let { append("Content Rating: $it\n") }
+            communityRating?.let { append("Star ($it): Average audience score\n") }
+            criticRating?.let { append("Tomato ($it): Critic approval percentage\n") }
+        }.trim()
         genre = genres?.joinToString(", ")
         author = studios?.joinToString(", ") { it.name }
         status = if (type == ItemType.Movie) SAnime.COMPLETED else this@ItemDto.status.parseStatus()
@@ -212,6 +218,10 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
                         setQueryParameter("SortBy", filter.toSortValue())
                         setQueryParameter("SortOrder", if (filter.isAscending()) "Ascending" else "Descending")
                     }
+                    is GenreFilter -> {
+                        val genreIds = filter.state.filter { it.state }.joinToString(",") { it.id }
+                        if (genreIds.isNotBlank()) addQueryParameter("GenreIds", genreIds)
+                    }
                     else -> {}
                 }
             }
@@ -332,11 +342,65 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
 
     override fun getFilterList(): AnimeFilterList {
         val categories = fetchCategories()
+        val genres = fetchGenres()
         return AnimeFilterList(
             CategoryFilter(categories),
-            SortFilter()
+            SortFilter(),
+            GenreFilter(genres)
         )
     }
+
+    private var genresCache: List<Pair<String, String>>? = null
+
+    private fun fetchGenres(): List<Pair<String, String>> {
+        if (genresCache == null) {
+            val cachedJson = prefs.getString("pref_cached_genres", null)
+            if (cachedJson != null) {
+                try {
+                    val list = mutableListOf<Pair<String, String>>()
+                    val array = json.parseToJsonElement(cachedJson).jsonArray
+                    array.forEach { 
+                        val obj = it.jsonObject
+                        list.add(Pair(obj["name"]!!.jsonPrimitive.content, obj["id"]!!.jsonPrimitive.content))
+                    }
+                    genresCache = list
+                } catch (e: Exception) { e.printStackTrace() }
+            }
+        }
+
+        genresCache?.let { if (it.isNotEmpty()) return it }
+        
+        val list = mutableListOf<Pair<String, String>>()
+        try {
+            if (userId.isNotBlank()) {
+                val url = "$baseUrl/Genres".toHttpUrl().newBuilder()
+                    .addQueryParameter("Recursive", "true")
+                    .addQueryParameter("IncludeItemTypes", "Movie,Series")
+                    .build()
+                val headers = Headers.headersOf("Authorization", getAuthHeader(deviceInfo, accessToken))
+                val resp = client.newCall(GET(url.toString(), headers)).execute()
+                if (resp.isSuccessful) {
+                    val items = resp.parseAs<ItemListDto>(json)
+                    items.items.forEach { list.add(Pair(it.name, it.id)) }
+                    
+                    val jsonArray = buildJsonArray {
+                        list.forEach { pair ->
+                            add(buildJsonObject {
+                                put("name", pair.first)
+                                put("id", pair.second)
+                            })
+                        }
+                    }
+                    prefs.edit().putString("pref_cached_genres", jsonArray.toString()).apply()
+                }
+            }
+        } catch (e: Exception) { e.printStackTrace() }
+        genresCache = list.sortedBy { it.first }
+        return genresCache!!
+    }
+
+    private class GenreFilter(genres: List<Pair<String, String>>) : AnimeFilter.Group<GenreCheckBox>("Genres", genres.map { GenreCheckBox(it.first, it.second) })
+    private class GenreCheckBox(name: String, val id: String) : AnimeFilter.CheckBox(name)
 
     private class CategoryFilter(val categories: List<Pair<String, String>>) : AnimeFilter.Select<String>("Category", categories.map { it.first }.toTypedArray()) {
         fun toValue() = categories[state].second
