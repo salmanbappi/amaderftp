@@ -295,64 +295,24 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
         }.also(screen::addPreference)
     }
 
-    // Dynamic Filters
+    // Static Categories
+    private val staticCategories = listOf(
+        Pair("All", ""),
+        Pair("ENGLISH", "4f9a1aee122b0b1d02c34ba39f31e331"),
+        Pair("HINDI", "4146eee110de8dd20f0a48dd88ca9f44"),
+        Pair("TV SERIES", "ea34d9f8d8b815c9ee04e1b30418f93d"),
+        Pair("ANIMATION", "3c31655512f355224c80fb9d26b96a86"),
+        Pair("BANGLA", "9b9a8e2554388a4174be75fa66e0fd61"),
+        Pair("DUBBED", "5705248032de005e70b2bc776246006f"),
+        Pair("TAMIL", "5a4fc1fc9e647e37b145a379afc74171"),
+        Pair("3D MOVIES", "162206c46a6e4cafcbeb6afe0bcabd05")
+    )
+
     private var categoriesCache: List<Pair<String, String>>? = null
     private var isFetchingInternal = false
     
     private fun fetchCategories(forceRefresh: Boolean = false): List<Pair<String, String>> {
-        if (!forceRefresh && categoriesCache != null && categoriesCache!!.size > 1) return categoriesCache!!
-
-        if (!forceRefresh) {
-            val cachedJson = prefs.getString("pref_cached_categories", null)
-            if (cachedJson != null) {
-                try {
-                    val list = mutableListOf<Pair<String, String>>()
-                    val array = json.parseToJsonElement(cachedJson).jsonArray
-                    array.forEach { 
-                        val obj = it.jsonObject
-                        list.add(Pair(obj["name"]!!.jsonPrimitive.content, obj["id"]!!.jsonPrimitive.content))
-                    }
-                    if (list.size > 1) {
-                        categoriesCache = list
-                        return list
-                    }
-                } catch (e: Exception) { e.printStackTrace() }
-            }
-        }
-
-        if (isFetchingInternal) return categoriesCache ?: listOf(Pair("All", ""))
-        
-        val list = mutableListOf<Pair<String, String>>(Pair("All", ""))
-        try {
-            if (userId.isNotBlank()) {
-                isFetchingInternal = true
-                val url = "$baseUrl/Users/$userId/Views"
-                val resp = client.newCall(GET(url)).execute()
-                if (resp.isSuccessful) {
-                    val views = resp.parseAs<ItemListDto>(json)
-                    views.items.filter { it.type == ItemType.BoxSet || it.collectionType == "movies" || it.collectionType == "tvshows" || it.id.isNotBlank() }
-                        .forEach { list.add(Pair(it.name, it.id)) }
-                    
-                    if (list.size > 1) {
-                        val jsonArray = buildJsonArray {
-                            list.forEach { pair ->
-                                add(buildJsonObject {
-                                    put("name", pair.first)
-                                    put("id", pair.second)
-                                })
-                            }
-                        }
-                        prefs.edit().putString("pref_cached_categories", jsonArray.toString()).apply()
-                        categoriesCache = list
-                    }
-                }
-                isFetchingInternal = false
-            }
-        } catch (e: Exception) { 
-            e.printStackTrace()
-            isFetchingInternal = false
-        }
-        return list
+        return staticCategories
     }
 
     override fun getFilterList(): AnimeFilterList {
