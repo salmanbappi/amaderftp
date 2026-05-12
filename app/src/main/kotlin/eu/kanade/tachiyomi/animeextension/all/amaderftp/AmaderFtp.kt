@@ -193,6 +193,9 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
             val loginDto = resp.parseAs<LoginDto>(json)
             accessToken = loginDto.accessToken
             userId = loginDto.sessionInfo.userId
+            // Refresh categories and genres in background after login
+            fetchCategories(true)
+            fetchGenres(true)
         } else {
             resp.close()
             throw IOException("Login failed: ${resp.code}")
@@ -293,37 +296,33 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
     // Dynamic Filters
     private var categoriesCache: List<Pair<String, String>>? = null
     
-    private fun fetchCategories(): List<Pair<String, String>> {
-        if (categoriesCache == null) {
+    private fun fetchCategories(forceRefresh: Boolean = false): List<Pair<String, String>> {
+        if (!forceRefresh && categoriesCache == null) {
             val cachedJson = prefs.getString("pref_cached_categories", null)
             if (cachedJson != null) {
                 try {
                     val list = mutableListOf<Pair<String, String>>()
-                    // Use json instance to parse
                     val array = json.parseToJsonElement(cachedJson).jsonArray
                     array.forEach { 
                         val obj = it.jsonObject
-                        val name = obj["name"]!!.jsonPrimitive.content
-                        val id = obj["id"]!!.jsonPrimitive.content
-                        list.add(Pair(name, id))
+                        list.add(Pair(obj["name"]!!.jsonPrimitive.content, obj["id"]!!.jsonPrimitive.content))
                     }
                     categoriesCache = list
                 } catch (e: Exception) { e.printStackTrace() }
             }
         }
 
-        categoriesCache?.let { if (it.isNotEmpty()) return it }
+        if (!forceRefresh && categoriesCache != null && categoriesCache!!.isNotEmpty()) return categoriesCache!!
         
         val list = mutableListOf<Pair<String, String>>(Pair("All", ""))
         try {
             if (userId.isNotBlank()) {
                 val url = "$baseUrl/Users/$userId/Views"
-                val resp = client.newCall(GET(url)).execute()
+                val resp = network.client.newCall(GET(url, Headers.headersOf("Authorization", getAuthHeader(deviceInfo, accessToken)))).execute()
                 if (resp.isSuccessful) {
                     val views = resp.parseAs<ItemListDto>(json)
                     views.items.forEach { list.add(Pair(it.name, it.id)) }
                     
-                    // Persist cache
                     val jsonArray = buildJsonArray {
                         list.forEach { pair ->
                             add(buildJsonObject {
@@ -333,10 +332,10 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
                         }
                     }
                     prefs.edit().putString("pref_cached_categories", jsonArray.toString()).apply()
+                    categoriesCache = list
                 }
             }
         } catch (e: Exception) { e.printStackTrace() }
-        categoriesCache = list
         return list
     }
 
@@ -352,8 +351,8 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
 
     private var genresCache: List<Pair<String, String>>? = null
 
-    private fun fetchGenres(): List<Pair<String, String>> {
-        if (genresCache == null) {
+    private fun fetchGenres(forceRefresh: Boolean = false): List<Pair<String, String>> {
+        if (!forceRefresh && genresCache == null) {
             val cachedJson = prefs.getString("pref_cached_genres", null)
             if (cachedJson != null) {
                 try {
@@ -368,7 +367,7 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
             }
         }
 
-        genresCache?.let { if (it.isNotEmpty()) return it }
+        if (!forceRefresh && genresCache != null && genresCache!!.isNotEmpty()) return genresCache!!
         
         val list = mutableListOf<Pair<String, String>>()
         try {
@@ -378,7 +377,7 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
                     .addQueryParameter("IncludeItemTypes", "Movie,Series")
                     .build()
                 val headers = Headers.headersOf("Authorization", getAuthHeader(deviceInfo, accessToken))
-                val resp = client.newCall(GET(url.toString(), headers)).execute()
+                val resp = network.client.newCall(GET(url.toString(), headers)).execute()
                 if (resp.isSuccessful) {
                     val items = resp.parseAs<ItemListDto>(json)
                     items.items.forEach { list.add(Pair(it.name, it.id)) }
@@ -392,11 +391,11 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
                         }
                     }
                     prefs.edit().putString("pref_cached_genres", jsonArray.toString()).apply()
+                    genresCache = list.sortedBy { it.first }
                 }
             }
         } catch (e: Exception) { e.printStackTrace() }
-        genresCache = list.sortedBy { it.first }
-        return genresCache!!
+        return genresCache ?: emptyList()
     }
 
     private class GenreFilter(genres: List<Pair<String, String>>) : AnimeFilter.Group<GenreCheckBox>("Genres", genres.map { GenreCheckBox(it.first, it.second) })
