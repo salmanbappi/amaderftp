@@ -133,7 +133,7 @@ fun String.getImageUrl(baseUrl: String, id: String): String = baseUrl.toHttpUrl(
 object PascalCaseToCamelCase : JsonNamingStrategy { override fun serialNameForJson(descriptor: SerialDescriptor, elementIndex: Int, serialName: String): String = serialName.replaceFirstChar { it.uppercase() } }
 fun getAuthHeader(deviceInfo: AmaderFtp.DeviceInfo, token: String? = null): String {
     val params = listOf("Client" to deviceInfo.clientName, "Version" to deviceInfo.version, "DeviceId" to deviceInfo.id, "Device" to deviceInfo.name, "Token" to token)
-    return params.filterNot { it.second == null }.joinToString(separator = ", ", prefix = "MediaBrowser ", transform = { "${it.first}=\"" + URLEncoder.encode(it.second!!.trim().replace("\n", " "), "UTF-8") + "\"" })
+    return params.filterNot { it.second == null }.joinToString(separator = ", ", prefix = "MediaBrowser ", transform = { "${it.first}=\"" + URLEncoder.encode(it.second!!.trim().replace("\n", " "), "UTF-8").replace("+", "%20") + "\"" })
 }
 
 class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
@@ -147,7 +147,7 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
     }
 
     override val baseUrl: String
-        get() = prefs.getString(PREF_BASE_URL, "http://amaderftp.net:8096")!!
+        get() = prefs.getString(PREF_BASE_URL, "http://amaderftp.net:8096")!!.removeSuffix("/")
 
     override val json = Json { isLenient = true; ignoreUnknownKeys = true; namingStrategy = PascalCaseToCamelCase }
     private val deviceInfo by lazy { getDeviceInfo(Injekt.get<Application>()) }
@@ -194,8 +194,10 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
             accessToken = loginDto.accessToken
             userId = loginDto.sessionInfo.userId
             // Refresh categories and genres in background after login
-            fetchCategories(true)
-            fetchGenres(true)
+            try {
+                fetchCategories(true)
+                fetchGenres(true)
+            } catch (_: Exception) {}
         } else {
             resp.close()
             throw IOException("Login failed: ${resp.code}")
@@ -298,7 +300,7 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
     private var isFetchingInternal = false
     
     private fun fetchCategories(forceRefresh: Boolean = false): List<Pair<String, String>> {
-        if (!forceRefresh && categoriesCache != null && categoriesCache!!.isNotEmpty()) return categoriesCache!!
+        if (!forceRefresh && categoriesCache != null && categoriesCache!!.size > 1) return categoriesCache!!
 
         if (!forceRefresh) {
             val cachedJson = prefs.getString("pref_cached_categories", null)
@@ -310,7 +312,7 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
                         val obj = it.jsonObject
                         list.add(Pair(obj["name"]!!.jsonPrimitive.content, obj["id"]!!.jsonPrimitive.content))
                     }
-                    if (list.isNotEmpty()) {
+                    if (list.size > 1) {
                         categoriesCache = list
                         return list
                     }
@@ -322,18 +324,14 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
         
         val list = mutableListOf<Pair<String, String>>(Pair("All", ""))
         try {
-            if (accessToken.isBlank() || userId.isBlank()) {
-                isFetchingInternal = true
-                login()
-                isFetchingInternal = false
-            }
-
             if (userId.isNotBlank()) {
+                isFetchingInternal = true
                 val url = "$baseUrl/Users/$userId/Views"
-                val resp = network.client.newCall(GET(url, Headers.headersOf("Authorization", getAuthHeader(deviceInfo, accessToken)))).execute()
+                val resp = client.newCall(GET(url)).execute()
                 if (resp.isSuccessful) {
                     val views = resp.parseAs<ItemListDto>(json)
-                    views.items.forEach { list.add(Pair(it.name, it.id)) }
+                    views.items.filter { it.type == ItemType.BoxSet || it.collectionType == "movies" || it.collectionType == "tvshows" || it.id.isNotBlank() }
+                        .forEach { list.add(Pair(it.name, it.id)) }
                     
                     if (list.size > 1) {
                         val jsonArray = buildJsonArray {
@@ -348,6 +346,7 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
                         categoriesCache = list
                     }
                 }
+                isFetchingInternal = false
             }
         } catch (e: Exception) { 
             e.printStackTrace()
@@ -393,19 +392,13 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
         
         val list = mutableListOf<Pair<String, String>>()
         try {
-            if (accessToken.isBlank() || userId.isBlank()) {
-                isFetchingInternal = true
-                login()
-                isFetchingInternal = false
-            }
-
             if (userId.isNotBlank()) {
+                isFetchingInternal = true
                 val url = "$baseUrl/Genres".toHttpUrl().newBuilder()
                     .addQueryParameter("Recursive", "true")
                     .addQueryParameter("IncludeItemTypes", "Movie,Series")
                     .build()
-                val headers = Headers.headersOf("Authorization", getAuthHeader(deviceInfo, accessToken))
-                val resp = network.client.newCall(GET(url.toString(), headers)).execute()
+                val resp = client.newCall(GET(url.toString())).execute()
                 if (resp.isSuccessful) {
                     val items = resp.parseAs<ItemListDto>(json)
                     items.items.forEach { list.add(Pair(it.name, it.id)) }
@@ -423,6 +416,7 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
                         genresCache = list.sortedBy { it.first }
                     }
                 }
+                isFetchingInternal = false
             }
         } catch (e: Exception) { 
             e.printStackTrace()
