@@ -187,7 +187,7 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
 
     private fun login() {
         val authHeaders = Headers.headersOf("Authorization", getAuthHeader(deviceInfo))
-        val body = buildJsonObject { put("Username", "user"); put("Pw", "1234") }.toRequestBody(json)
+        val body = buildJsonObject { put("Username", "user"); put("Password", "1234") }.toRequestBody(json)
         val resp = network.client.newCall(POST("$baseUrl/Users/AuthenticateByName", authHeaders, body)).execute()
         if (resp.isSuccessful) {
             val loginDto = resp.parseAs<LoginDto>(json)
