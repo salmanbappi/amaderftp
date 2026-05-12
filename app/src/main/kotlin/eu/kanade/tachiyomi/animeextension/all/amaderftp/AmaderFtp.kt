@@ -66,9 +66,9 @@ object ItemTypeSerializer : KSerializer<ItemType> {
     override fun deserialize(decoder: Decoder) = ItemType.fromString(decoder.decodeString())
 }
 
-@Serializable data class ItemListDto(val items: List<ItemDto>, val totalRecordCount: Int)
+@Serializable data class ItemListDto(val items: List<ItemDto> = emptyList(), val totalRecordCount: Int = 0)
 @Serializable data class ItemDto(
-    val name: String, val type: ItemType, val id: String, val locationType: String, val imageTags: ImageDto,
+    val name: String, val type: ItemType? = ItemType.Other, val id: String, val locationType: String? = null, val imageTags: ImageDto? = ImageDto(),
     val collectionType: String? = null, val seriesId: String? = null, val seriesName: String? = null,
     val seasonName: String? = null, val seriesPrimaryImageTag: String? = null, val status: String? = null,
     val overview: String? = null, val genres: List<String>? = null, val studios: List<StudioDto>? = null,
@@ -81,8 +81,8 @@ object ItemTypeSerializer : KSerializer<ItemType> {
     @Serializable class StudioDto(val name: String)
     fun toSAnime(baseUrl: String, userId: String): SAnime = SAnime.create().apply {
         val typeMap = mapOf(ItemType.Season to "seriesId,$seriesId", ItemType.Movie to "movie", ItemType.BoxSet to "boxSet", ItemType.Series to "series")
-        url = baseUrl.toHttpUrl().newBuilder().addPathSegment("Users").addPathSegment(userId).addPathSegment("Items").addPathSegment(id).fragment(typeMap[type]).build().toString()
-        thumbnail_url = imageTags.primary?.getImageUrl(baseUrl, id)
+        url = baseUrl.toHttpUrl().newBuilder().addPathSegment("Users").addPathSegment(userId).addPathSegment("Items").addPathSegment(id).fragment(typeMap[type ?: ItemType.Other]).build().toString()
+        thumbnail_url = imageTags?.primary?.getImageUrl(baseUrl, id)
         title = name
         // Optimized: Regex instead of Jsoup for list performance
         description = buildString {
@@ -99,7 +99,7 @@ object ItemTypeSerializer : KSerializer<ItemType> {
                 title = seriesName ?: "Season"
                 seriesId?.let { thumbnail_url = seriesPrimaryImageTag?.getImageUrl(baseUrl, it) }
             } else { title = "$seriesName $name" }
-            if (imageTags.primary == null) seriesId?.let { thumbnail_url = seriesPrimaryImageTag?.getImageUrl(baseUrl, it) }
+            if (imageTags?.primary == null) seriesId?.let { thumbnail_url = seriesPrimaryImageTag?.getImageUrl(baseUrl, it) }
         }
     }
     private fun String?.parseStatus(): Int = when (this?.lowercase()) { "ended" -> SAnime.COMPLETED; "continuing" -> SAnime.ONGOING; else -> SAnime.UNKNOWN }
@@ -295,9 +295,12 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
 
     // Dynamic Filters
     private var categoriesCache: List<Pair<String, String>>? = null
+    private var isFetchingInternal = false
     
     private fun fetchCategories(forceRefresh: Boolean = false): List<Pair<String, String>> {
-        if (!forceRefresh && categoriesCache == null) {
+        if (!forceRefresh && categoriesCache != null && categoriesCache!!.isNotEmpty()) return categoriesCache!!
+
+        if (!forceRefresh) {
             val cachedJson = prefs.getString("pref_cached_categories", null)
             if (cachedJson != null) {
                 try {
@@ -307,15 +310,24 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
                         val obj = it.jsonObject
                         list.add(Pair(obj["name"]!!.jsonPrimitive.content, obj["id"]!!.jsonPrimitive.content))
                     }
-                    categoriesCache = list
+                    if (list.isNotEmpty()) {
+                        categoriesCache = list
+                        return list
+                    }
                 } catch (e: Exception) { e.printStackTrace() }
             }
         }
 
-        if (!forceRefresh && categoriesCache != null && categoriesCache!!.isNotEmpty()) return categoriesCache!!
+        if (isFetchingInternal) return categoriesCache ?: listOf(Pair("All", ""))
         
         val list = mutableListOf<Pair<String, String>>(Pair("All", ""))
         try {
+            if (accessToken.isBlank() || userId.isBlank()) {
+                isFetchingInternal = true
+                login()
+                isFetchingInternal = false
+            }
+
             if (userId.isNotBlank()) {
                 val url = "$baseUrl/Users/$userId/Views"
                 val resp = network.client.newCall(GET(url, Headers.headersOf("Authorization", getAuthHeader(deviceInfo, accessToken)))).execute()
@@ -323,19 +335,24 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
                     val views = resp.parseAs<ItemListDto>(json)
                     views.items.forEach { list.add(Pair(it.name, it.id)) }
                     
-                    val jsonArray = buildJsonArray {
-                        list.forEach { pair ->
-                            add(buildJsonObject {
-                                put("name", pair.first)
-                                put("id", pair.second)
-                            })
+                    if (list.size > 1) {
+                        val jsonArray = buildJsonArray {
+                            list.forEach { pair ->
+                                add(buildJsonObject {
+                                    put("name", pair.first)
+                                    put("id", pair.second)
+                                })
+                            }
                         }
+                        prefs.edit().putString("pref_cached_categories", jsonArray.toString()).apply()
+                        categoriesCache = list
                     }
-                    prefs.edit().putString("pref_cached_categories", jsonArray.toString()).apply()
-                    categoriesCache = list
                 }
             }
-        } catch (e: Exception) { e.printStackTrace() }
+        } catch (e: Exception) { 
+            e.printStackTrace()
+            isFetchingInternal = false
+        }
         return list
     }
 
@@ -352,7 +369,9 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
     private var genresCache: List<Pair<String, String>>? = null
 
     private fun fetchGenres(forceRefresh: Boolean = false): List<Pair<String, String>> {
-        if (!forceRefresh && genresCache == null) {
+        if (!forceRefresh && genresCache != null && genresCache!!.isNotEmpty()) return genresCache!!
+
+        if (!forceRefresh) {
             val cachedJson = prefs.getString("pref_cached_genres", null)
             if (cachedJson != null) {
                 try {
@@ -362,15 +381,24 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
                         val obj = it.jsonObject
                         list.add(Pair(obj["name"]!!.jsonPrimitive.content, obj["id"]!!.jsonPrimitive.content))
                     }
-                    genresCache = list
+                    if (list.isNotEmpty()) {
+                        genresCache = list
+                        return list
+                    }
                 } catch (e: Exception) { e.printStackTrace() }
             }
         }
 
-        if (!forceRefresh && genresCache != null && genresCache!!.isNotEmpty()) return genresCache!!
+        if (isFetchingInternal) return genresCache ?: emptyList()
         
         val list = mutableListOf<Pair<String, String>>()
         try {
+            if (accessToken.isBlank() || userId.isBlank()) {
+                isFetchingInternal = true
+                login()
+                isFetchingInternal = false
+            }
+
             if (userId.isNotBlank()) {
                 val url = "$baseUrl/Genres".toHttpUrl().newBuilder()
                     .addQueryParameter("Recursive", "true")
@@ -382,19 +410,24 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
                     val items = resp.parseAs<ItemListDto>(json)
                     items.items.forEach { list.add(Pair(it.name, it.id)) }
                     
-                    val jsonArray = buildJsonArray {
-                        list.forEach { pair ->
-                            add(buildJsonObject {
-                                put("name", pair.first)
-                                put("id", pair.second)
-                            })
+                    if (list.isNotEmpty()) {
+                        val jsonArray = buildJsonArray {
+                            list.forEach { pair ->
+                                add(buildJsonObject {
+                                    put("name", pair.first)
+                                    put("id", pair.second)
+                                })
+                            }
                         }
+                        prefs.edit().putString("pref_cached_genres", jsonArray.toString()).apply()
+                        genresCache = list.sortedBy { it.first }
                     }
-                    prefs.edit().putString("pref_cached_genres", jsonArray.toString()).apply()
-                    genresCache = list.sortedBy { it.first }
                 }
             }
-        } catch (e: Exception) { e.printStackTrace() }
+        } catch (e: Exception) { 
+            e.printStackTrace()
+            isFetchingInternal = false
+        }
         return genresCache ?: emptyList()
     }
 
