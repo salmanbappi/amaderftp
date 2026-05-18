@@ -149,6 +149,12 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
     override val baseUrl: String
         get() = prefs.getString(PREF_BASE_URL, "http://amaderftp.net:8096")!!.removeSuffix("/")
 
+    private val username: String
+        get() = prefs.getString(PREF_USERNAME, "user")!!
+
+    private val password: String
+        get() = prefs.getString(PREF_PASSWORD, "1234")!!
+
     override val json = Json { isLenient = true; ignoreUnknownKeys = true; namingStrategy = PascalCaseToCamelCase }
     private val deviceInfo by lazy { getDeviceInfo(Injekt.get<Application>()) }
 
@@ -187,7 +193,7 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
 
     private fun login() {
         val authHeaders = Headers.headersOf("Authorization", getAuthHeader(deviceInfo))
-        val body = buildJsonObject { put("Username", "user"); put("Password", "1234") }.toRequestBody(json)
+        val body = buildJsonObject { put("Username", username); put("Pw", password) }.toRequestBody(json)
         val resp = network.client.newCall(POST("$baseUrl/Users/AuthenticateByName", authHeaders, body)).execute()
         if (resp.isSuccessful) {
             val loginDto = resp.parseAs<LoginDto>(json)
@@ -292,6 +298,20 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
                     false
                 }
             }
+        }.also(screen::addPreference)
+
+        EditTextPreference(screen.context).apply {
+            key = PREF_USERNAME
+            title = "Username"
+            setDefaultValue("user")
+            summary = "Default: user"
+        }.also(screen::addPreference)
+
+        EditTextPreference(screen.context).apply {
+            key = PREF_PASSWORD
+            title = "Password"
+            setDefaultValue("1234")
+            summary = "Default: 1234"
         }.also(screen::addPreference)
     }
 
@@ -402,5 +422,7 @@ class AmaderFtp : Source(), UnmeteredSource, ConfigurableAnimeSource {
     
     companion object {
         private const val PREF_BASE_URL = "pref_base_url"
+        private const val PREF_USERNAME = "pref_username"
+        private const val PREF_PASSWORD = "pref_password"
     }
 }
